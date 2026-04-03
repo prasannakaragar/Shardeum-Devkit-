@@ -1,15 +1,28 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { ethers } from 'ethers'
 import { Rocket, AlertTriangle, CheckCircle, Loader, ExternalLink, Upload, Info, X } from 'lucide-react'
 import { useShardeum } from '../contexts/ShardeumContext'
 
-// Parse constructor inputs from ABI to build typed arg fields
+// ─── Storage helpers ──────────────────────────────────────────────────────────
+const DEPLOYER_KEY = 'shardeum_deployer_state'
+
+function loadDeployerState() {
+  try {
+    const raw = localStorage.getItem(DEPLOYER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function saveDeployerState(state) {
+  try { localStorage.setItem(DEPLOYER_KEY, JSON.stringify(state)) } catch {}
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 function getConstructorInputs(parsedAbi) {
   const ctor = parsedAbi.find(e => e.type === 'constructor')
   return ctor ? ctor.inputs || [] : []
 }
 
-// Coerce a string arg to the right JS/ethers type based on Solidity type
 function coerceArg(value, solidityType) {
   const v = value.trim()
   if (solidityType.startsWith('uint') || solidityType.startsWith('int')) {
@@ -28,12 +41,10 @@ function coerceArg(value, solidityType) {
     return v
   }
   if (solidityType.includes('[]') || solidityType.includes('[')) {
-    // Array type — expect JSON
     try { return JSON.parse(v) } catch {
       throw new Error(`Expected JSON array for ${solidityType}, got: "${v}"`)
     }
   }
-  // bytes32, bytes, string — return as-is
   return v
 }
 
@@ -62,37 +73,39 @@ function ArgField({ input, value, onChange }) {
   )
 }
 
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function Deployer() {
   const { signer, walletAddress, network, addLog, addDeployedContract, addTransaction } = useShardeum()
 
-  const [contractName, setContractName] = useState('')
-  const [abiText, setAbiText] = useState('')
-  const [bytecode, setBytecode] = useState('')
-  const [gasLimit, setGasLimit] = useState('3000000')
+  // Load persisted state once on mount
+  const savedState = loadDeployerState()
 
-  // Parsed state
-  const [parsedAbi, setParsedAbi] = useState(null)
+  const [contractName, setContractName] = useState(savedState?.contractName || '')
+  const [abiText, setAbiText]           = useState(savedState?.abiText || '')
+  const [bytecode, setBytecode]         = useState(savedState?.bytecode || '')
+  const [gasLimit, setGasLimit]         = useState(savedState?.gasLimit || '3000000')
+  const [argValues, setArgValues]       = useState(savedState?.argValues || [])
+
+  // Derived parse state (not persisted — re-derived from abiText)
+  const [parsedAbi, setParsedAbi]               = useState(null)
   const [constructorInputs, setConstructorInputs] = useState([])
-  const [argValues, setArgValues] = useState([]) // parallel array of string values
+  const [abiError, setAbiError]                 = useState(null)
 
-  const [abiError, setAbiError] = useState(null)
-  const [deploying, setDeploying] = useState(false)
+  // UI state
+  const [deploying, setDeploying]       = useState(false)
   const [deployResult, setDeployResult] = useState(null)
-  const [error, setError] = useState(null)
-  const [step, setStep] = useState(0)
+  const [error, setError]               = useState(null)
+  const [step, setStep]                 = useState(0)
   const [liveGasPrice, setLiveGasPrice] = useState(null)
 
   const fileInputRef = useRef(null)
-
   const STEPS = ['Validate ABI', 'Encode Constructor', 'Estimate Gas', 'Deploy Transaction', 'Confirm']
 
-  // Parse ABI whenever the user edits it
-  const handleAbiChange = (text) => {
-    setAbiText(text)
+  // ── Re-parse ABI whenever abiText changes (including initial load) ──
+  const parseAbi = useCallback((text) => {
     setAbiError(null)
     setParsedAbi(null)
     setConstructorInputs([])
-    setArgValues([])
     if (!text.trim()) return
     try {
       const parsed = JSON.parse(text)
@@ -100,13 +113,33 @@ export default function Deployer() {
       const inputs = getConstructorInputs(parsed)
       setParsedAbi(parsed)
       setConstructorInputs(inputs)
-      setArgValues(inputs.map(() => ''))
+      // Only reset arg values if inputs count changed (preserves typed values on re-parse)
+      setArgValues(prev =>
+        prev.length === inputs.length ? prev : inputs.map(() => '')
+      )
     } catch (e) {
       setAbiError('Invalid ABI: ' + e.message)
     }
+  }, [])
+
+  // Parse on first mount from saved state
+  useEffect(() => {
+    if (savedState?.abiText) parseAbi(savedState.abiText)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── Persist to localStorage whenever relevant fields change ──
+  useEffect(() => {
+    saveDeployerState({ contractName, abiText, bytecode, gasLimit, argValues })
+  }, [contractName, abiText, bytecode, gasLimit, argValues])
+
+  // ── ABI change handler ──
+  const handleAbiChange = (text) => {
+    setAbiText(text)
+    parseAbi(text)
   }
 
-  // Load from a compiled artifact JSON file (contains abi + bytecode fields)
+  // ── Load from artifact file ──
   const handleFileUpload = (e) => {
     const file = e.target.files[0]
     if (!file) return
@@ -114,16 +147,17 @@ export default function Deployer() {
     reader.onload = (ev) => {
       try {
         const artifact = JSON.parse(ev.target.result)
-        // Support both Hardhat artifacts and our compile.js output
-        const abi = artifact.abi
-        const bc = artifact.bytecode || artifact.evm?.bytecode?.object
+        const abi  = artifact.abi
+        const bc   = artifact.bytecode || artifact.evm?.bytecode?.object
         const name = artifact.contractName || artifact.name || file.name.replace('.json', '')
         if (!abi) throw new Error('No "abi" field found in JSON')
-        if (!bc) throw new Error('No "bytecode" field found in JSON')
+        if (!bc)  throw new Error('No "bytecode" field found in JSON')
+        const abiStr = JSON.stringify(abi, null, 2)
+        const bcStr  = bc.startsWith('0x') ? bc : '0x' + bc
         setContractName(name)
-        setAbiText(JSON.stringify(abi, null, 2))
-        setBytecode(bc.startsWith('0x') ? bc : '0x' + bc)
-        handleAbiChange(JSON.stringify(abi, null, 2))
+        setAbiText(abiStr)
+        setBytecode(bcStr)
+        parseAbi(abiStr)
         addLog(`Loaded artifact: ${name}`, 'success')
       } catch (err) {
         addLog(`Failed to load artifact: ${err.message}`, 'error')
@@ -131,19 +165,19 @@ export default function Deployer() {
       }
     }
     reader.readAsText(file)
-    // Reset so same file can be re-uploaded
     e.target.value = ''
   }
 
+  // ── Deploy ──
   const handleDeploy = async () => {
-    if (!signer) { setError('Connect your wallet to deploy'); return }
-    if (!abiText.trim()) { setError('Paste your contract ABI first'); return }
-    if (!bytecode.trim()) { setError('Paste your contract bytecode first'); return }
-    if (!parsedAbi) { setError(abiError || 'Fix ABI errors first'); return }
+    if (!signer)           { setError('Connect your wallet to deploy'); return }
+    if (!abiText.trim())   { setError('Paste your contract ABI first'); return }
+    if (!bytecode.trim())  { setError('Paste your contract bytecode first'); return }
+    if (!parsedAbi)        { setError(abiError || 'Fix ABI errors first'); return }
 
     const bc = bytecode.trim()
     if (bc === '0x' || bc.length < 10) {
-      setError('Bytecode looks empty or invalid. Run compile.js first and paste the output bytecode.')
+      setError('Bytecode looks empty or invalid. Compile your contract first and paste the output bytecode.')
       return
     }
 
@@ -163,9 +197,7 @@ export default function Deployer() {
       addLog('Encoding constructor arguments...', 'info')
       let args = []
       if (constructorInputs.length > 0) {
-        args = constructorInputs.map((input, i) => {
-          return coerceArg(argValues[i] || '', input.type)
-        })
+        args = constructorInputs.map((input, i) => coerceArg(argValues[i] || '', input.type))
       }
       addLog(`Constructor args: ${args.length > 0 ? JSON.stringify(args.map(String)) : 'none'}`, 'info')
 
@@ -178,7 +210,6 @@ export default function Deployer() {
         const feeData = await web3Provider.getFeeData()
         deployGasPrice = feeData.gasPrice || feeData.maxFeePerGas
         if (!deployGasPrice) throw new Error('Gas price unavailable')
-        // Add 20% buffer
         deployGasPrice = deployGasPrice * 120n / 100n
         setLiveGasPrice(ethers.formatUnits(deployGasPrice, 'gwei'))
         addLog(`Gas price: ${parseFloat(ethers.formatUnits(deployGasPrice, 'gwei')).toFixed(4)} gwei`, 'success')
@@ -205,7 +236,10 @@ export default function Deployer() {
       const address = await contract.getAddress()
 
       const finalName = contractName.trim() || 'MyContract'
+
       setDeployResult({ address, txHash, network: network.name })
+
+      // Save to global deployed contracts list
       addDeployedContract({
         name: finalName,
         address,
@@ -213,16 +247,22 @@ export default function Deployer() {
         bytecode: bc,
         network: network.name,
         txHash,
-        deployedAt: new Date().toLocaleTimeString()
+        deployedAt: new Date().toLocaleTimeString(),
+        timestamp: new Date().toISOString(),
       })
+
+      // Record in transaction monitor
       addTransaction({
         hash: txHash,
         type: 'Deploy',
         contract: finalName,
         status: 'confirmed',
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
       })
-      addLog(`✓ Contract deployed at ${address}`, 'success')
+
+      addLog(`✅ ${finalName} deployed at ${address}`, 'success')
+      addLog(`TX: ${txHash}`, 'info')
+      addLog(`Network: ${network.name}`, 'info')
     } catch (e) {
       const msg = e.reason || e.shortMessage || e.message || 'Deployment failed'
       setError(msg)
@@ -232,10 +272,12 @@ export default function Deployer() {
     }
   }
 
+  // ── Reset (clears both UI and persisted state) ──
   const reset = () => {
     setContractName('')
     setAbiText('')
     setBytecode('')
+    setGasLimit('3000000')
     setParsedAbi(null)
     setConstructorInputs([])
     setArgValues([])
@@ -244,6 +286,8 @@ export default function Deployer() {
     setError(null)
     setStep(0)
     setLiveGasPrice(null)
+    saveDeployerState(null)
+    localStorage.removeItem(DEPLOYER_KEY)
   }
 
   return (
@@ -254,7 +298,11 @@ export default function Deployer() {
           <p className="text-xs font-mono mt-0.5" style={{ color: '#6b9aaa' }}>Deploy smart contracts to {network.name}</p>
         </div>
         {(abiText || bytecode) && (
-          <button onClick={reset} className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3" style={{ borderRadius: '4px', color: '#ef4444', borderColor: '#ef4444' }}>
+          <button
+            onClick={reset}
+            className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3"
+            style={{ borderRadius: '4px', color: '#ef4444', borderColor: '#ef4444' }}
+          >
             <X size={13} /> Reset
           </button>
         )}
@@ -272,12 +320,17 @@ export default function Deployer() {
         ))}
       </div>
 
-      {/* How to get bytecode tip */}
+      {/* How-to tip */}
       <div className="cyber-card p-4 flex items-start gap-3" style={{ borderColor: 'rgba(0,245,212,0.15)' }}>
         <Info size={15} style={{ color: '#00f5d4', flexShrink: 0, marginTop: '1px' }} />
         <div className="text-xs font-mono" style={{ color: '#6b9aaa' }}>
-          <span style={{ color: '#00f5d4' }}>How to get ABI & Bytecode:</span> Run <code style={{ color: '#f59e0b' }}>npm install solc</code> then <code style={{ color: '#f59e0b' }}>node scripts/compile.js</code> — this creates <code style={{ color: '#00f5d4' }}>artifacts/YourContract.json</code>.
-          Upload that file below, or copy-paste the <code style={{ color: '#f59e0b' }}>abi</code> and <code style={{ color: '#f59e0b' }}>bytecode</code> fields manually.
+          <span style={{ color: '#00f5d4' }}>Tip:</span> Use the{' '}
+          <span style={{ color: '#f59e0b' }}>Contract Editor</span> tab to write &amp; compile your Solidity,
+          then click <span style={{ color: '#f59e0b' }}>ABI / Bytecode</span> → <span style={{ color: '#f59e0b' }}>Export JSON</span>{' '}
+          and upload the artifact here. Or paste the ABI &amp; bytecode manually below.
+          {savedState?.abiText && (
+            <span style={{ color: '#00f5d4' }}> · ✓ Previous session restored</span>
+          )}
         </div>
       </div>
 
@@ -287,16 +340,17 @@ export default function Deployer() {
           <div className="cyber-card p-5 space-y-4">
             <div className="text-xs font-mono" style={{ color: '#00f5d4' }}>CONTRACT DETAILS</div>
 
-            {/* Artifact file upload */}
+            {/* Artifact upload */}
             <div>
               <label className="block text-xs font-mono mb-1" style={{ color: '#6b9aaa' }}>LOAD FROM ARTIFACT FILE</label>
               <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileUpload} style={{ display: 'none' }} />
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="cyber-btn rounded w-full flex items-center justify-center gap-2 text-xs py-2"
-                style={{ borderRadius: '4px' }}>
+                style={{ borderRadius: '4px' }}
+              >
                 <Upload size={13} />
-                Upload artifacts/Contract.json
+                Upload Contract.json artifact
               </button>
             </div>
 
@@ -308,11 +362,16 @@ export default function Deployer() {
 
             <div>
               <label className="block text-xs font-mono mb-1" style={{ color: '#6b9aaa' }}>CONTRACT NAME</label>
-              <input value={contractName} onChange={e => setContractName(e.target.value)}
-                className="cyber-input rounded w-full" style={{ borderRadius: '4px' }} placeholder="MyContract" />
+              <input
+                value={contractName}
+                onChange={e => setContractName(e.target.value)}
+                className="cyber-input rounded w-full"
+                style={{ borderRadius: '4px' }}
+                placeholder="MyContract"
+              />
             </div>
 
-            {/* Dynamic constructor arg fields */}
+            {/* Constructor args */}
             {constructorInputs.length > 0 && (
               <div className="space-y-3">
                 <div className="text-xs font-mono" style={{ color: '#00f5d4' }}>CONSTRUCTOR ARGUMENTS</div>
@@ -342,8 +401,12 @@ export default function Deployer() {
             <div className="text-xs font-mono" style={{ color: '#00f5d4' }}>GAS SETTINGS</div>
             <div>
               <label className="block text-xs font-mono mb-1" style={{ color: '#6b9aaa' }}>GAS LIMIT</label>
-              <input value={gasLimit} onChange={e => setGasLimit(e.target.value)}
-                className="cyber-input rounded w-full" style={{ borderRadius: '4px' }} />
+              <input
+                value={gasLimit}
+                onChange={e => setGasLimit(e.target.value)}
+                className="cyber-input rounded w-full"
+                style={{ borderRadius: '4px' }}
+              />
             </div>
             <div className="text-xs font-mono p-2 rounded" style={{ background: 'rgba(0,245,212,0.05)', color: '#6b9aaa' }}>
               ⚡ Gas price fetched live from network at deploy time
@@ -362,7 +425,11 @@ export default function Deployer() {
             onClick={handleDeploy}
             disabled={deploying || !walletAddress || !parsedAbi || !bytecode}
             className="cyber-btn-primary w-full py-3 rounded flex items-center justify-center gap-2"
-            style={{ borderRadius: '6px', opacity: (deploying || !walletAddress || !parsedAbi || !bytecode) ? 0.6 : 1, cursor: (deploying || !walletAddress || !parsedAbi || !bytecode) ? 'not-allowed' : 'pointer' }}
+            style={{
+              borderRadius: '6px',
+              opacity: (deploying || !walletAddress || !parsedAbi || !bytecode) ? 0.6 : 1,
+              cursor: (deploying || !walletAddress || !parsedAbi || !bytecode) ? 'not-allowed' : 'pointer'
+            }}
           >
             {deploying ? <Loader size={16} className="animate-spin" /> : <Rocket size={16} />}
             <span className="font-display font-bold tracking-wider">
@@ -390,6 +457,7 @@ export default function Deployer() {
               <div className="text-xs font-mono mt-1" style={{ color: '#ef4444' }}>{abiError}</div>
             )}
           </div>
+
           <div>
             <label className="block text-xs font-mono mb-2" style={{ color: '#6b9aaa' }}>
               BYTECODE
@@ -402,13 +470,29 @@ export default function Deployer() {
               onChange={e => setBytecode(e.target.value)}
               className="code-editor w-full"
               style={{ height: '120px', fontSize: '11px' }}
-              placeholder="0x608060405234801561001057600080fd... (full bytecode from artifacts/)"
+              placeholder="0x608060405234801561001057600080fd... (full bytecode)"
             />
           </div>
+
+          {/* Live preview of what's loaded */}
+          {parsedAbi && (
+            <div className="cyber-card p-3 space-y-1 text-xs font-mono" style={{ borderColor: 'rgba(0,245,212,0.15)' }}>
+              <div style={{ color: '#00f5d4' }}>✓ ABI loaded — {parsedAbi.length} entries</div>
+              {parsedAbi.filter(e => e.type === 'function').slice(0, 5).map((fn, i) => (
+                <div key={i} style={{ color: '#2d5a68' }}>
+                  <span style={{ color: '#6b9aaa' }}>fn</span> {fn.name}({fn.inputs?.map(i => i.type).join(', ')})
+                  {fn.stateMutability && <span style={{ color: '#0d2d3d' }}> · {fn.stateMutability}</span>}
+                </div>
+              ))}
+              {parsedAbi.filter(e => e.type === 'function').length > 5 && (
+                <div style={{ color: '#2d5a68' }}>+{parsedAbi.filter(e => e.type === 'function').length - 5} more functions...</div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Result */}
+      {/* Deploy result */}
       {deployResult && (
         <div className="cyber-card p-5" style={{ borderColor: 'rgba(16,185,129,0.4)', background: 'rgba(16,185,129,0.05)' }}>
           <div className="flex items-center gap-2 mb-4">
@@ -416,30 +500,33 @@ export default function Deployer() {
             <span className="font-display font-bold text-sm" style={{ color: '#10b981' }}>DEPLOYMENT SUCCESSFUL</span>
           </div>
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono" style={{ color: '#6b9aaa' }}>Contract Address</span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono" style={{ color: '#00f5d4' }}>{deployResult.address}</span>
-                <a href={`${network.explorerUrl}/address/${deployResult.address}`} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink size={12} style={{ color: '#2d5a68' }} />
-                </a>
+            {[
+              ['Contract Address', deployResult.address],
+              ['Transaction Hash', deployResult.txHash],
+              ['Network', deployResult.network],
+            ].map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between">
+                <span className="text-xs font-mono" style={{ color: '#6b9aaa' }}>{k}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono" style={{ color: '#00f5d4' }}>
+                    {typeof v === 'string' && v.length > 30 ? v.slice(0, 22) + '...' : v}
+                  </span>
+                  {k === 'Contract Address' && (
+                    <a href={`${network.explorerUrl}/address/${deployResult.address}`} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink size={12} style={{ color: '#2d5a68' }} />
+                    </a>
+                  )}
+                  {k === 'Transaction Hash' && deployResult.txHash && (
+                    <a href={`${network.explorerUrl}/tx/${deployResult.txHash}`} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink size={12} style={{ color: '#2d5a68' }} />
+                    </a>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono" style={{ color: '#6b9aaa' }}>Transaction Hash</span>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono" style={{ color: '#00f5d4' }}>
-                  {deployResult.txHash?.slice(0, 20)}...
-                </span>
-                <a href={`${network.explorerUrl}/tx/${deployResult.txHash}`} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink size={12} style={{ color: '#2d5a68' }} />
-                </a>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono" style={{ color: '#6b9aaa' }}>Network</span>
-              <span className="tag text-xs">{deployResult.network}</span>
-            </div>
+            ))}
+          </div>
+          <div className="mt-3 pt-3 text-xs font-mono" style={{ borderTop: '1px solid rgba(16,185,129,0.2)', color: '#2d5a68' }}>
+            ✓ Saved to Deployed Contracts · ✓ Recorded in Transaction Monitor
           </div>
         </div>
       )}

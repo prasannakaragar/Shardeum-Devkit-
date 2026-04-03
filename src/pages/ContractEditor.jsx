@@ -478,7 +478,7 @@ contract ${name} {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ContractEditor() {
-  const { addLog, signer, addDeployedContract, walletAddress } = useShardeum()
+  const { addLog, signer, addDeployedContract, addTransaction, walletAddress, network } = useShardeum()
 
   // ── Persistent contracts list ──
   const [contracts, setContracts] = useState(() => {
@@ -682,20 +682,35 @@ export default function ContractEditor() {
       await contract.waitForDeployment()
       const address = await contract.getAddress()
 
+      const txHash = contract.deploymentTransaction()?.hash
+
       const deployed = {
         name: contractData.name,
         address,
         abi,
         bytecode,
-        network: 'current',
+        network: network.name,
         timestamp: new Date().toISOString(),
-        txHash: contract.deploymentTransaction()?.hash,
+        txHash,
+        deployedAt: new Date().toLocaleTimeString(),
       }
       addDeployedContract(deployed)
+
+      // Record in transaction monitor (same shape Deployer.jsx uses)
+      addTransaction({
+        hash: txHash,
+        type: 'Deploy',
+        contract: contractData.name,
+        status: 'confirmed',
+        timestamp: new Date().toLocaleTimeString(),
+      })
+
       addLog(`✅ Deployed ${contractData.name} at ${address}`, 'success')
+      addLog(`TX: ${txHash}`, 'info')
+      addLog(`Network: ${network.name}`, 'info')
 
       // Store deployment result in state for display
-      setCompileResult(prev => prev ? { ...prev, deployed: { address, txHash: contract.deploymentTransaction()?.hash } } : null)
+      setCompileResult(prev => prev ? { ...prev, deployed: { address, txHash, contractName: contractData.name } } : null)
     } catch (err) {
       addLog(`Deployment failed: ${err.message}`, 'error')
     } finally {
@@ -1012,9 +1027,16 @@ export default function ContractEditor() {
                   </div>
                 ))}
                 {compileResult.deployed && (
-                  <div className="flex items-center gap-2" style={{ color: '#00f5d4' }}>
-                    <Zap size={12} />
-                    Deployed at: {compileResult.deployed.address}
+                  <div className="space-y-1 mt-1 p-2 rounded" style={{ background: 'rgba(0,245,212,0.06)', border: '1px solid rgba(0,245,212,0.2)' }}>
+                    <div className="flex items-center gap-2" style={{ color: '#00f5d4' }}>
+                      <Zap size={12} />
+                      <span className="font-bold">{compileResult.deployed.contractName} deployed!</span>
+                    </div>
+                    <div style={{ color: '#6b9aaa' }}>Address: <span style={{ color: '#e2f4f1' }}>{compileResult.deployed.address}</span></div>
+                    {compileResult.deployed.txHash && (
+                      <div style={{ color: '#6b9aaa' }}>TX: <span style={{ color: '#e2f4f1' }}>{compileResult.deployed.txHash.slice(0, 24)}...</span></div>
+                    )}
+                    <div style={{ color: '#2d5a68', fontSize: '10px' }}>✓ Recorded in Transaction Monitor &amp; Deployed Contracts</div>
                   </div>
                 )}
               </>
