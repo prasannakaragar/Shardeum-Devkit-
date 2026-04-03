@@ -30,18 +30,58 @@ export const SHARDEUM_NETWORKS = {
   }
 }
 
+// Safely read from localStorage
+function loadFromStorage(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+// Safely write to localStorage
+function saveToStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // quota exceeded or private mode — silently ignore
+  }
+}
+
 export function ShardeumProvider({ children }) {
-  const [selectedNetwork, setSelectedNetwork] = useState('testnet')
+  const [selectedNetwork, setSelectedNetwork] = useState(
+    () => loadFromStorage('shardeum_network', 'testnet')
+  )
   const [walletAddress, setWalletAddress] = useState(null)
   const [balance, setBalance] = useState(null)
   const [provider, setProvider] = useState(null)
   const [signer, setSigner] = useState(null)
   const [networkStatus, setNetworkStatus] = useState('checking')
-  const [deployedContracts, setDeployedContracts] = useState([])
-  const [transactions, setTransactions] = useState([])
+  const [deployedContracts, setDeployedContracts] = useState(
+    () => loadFromStorage('shardeum_contracts', [])
+  )
+  const [transactions, setTransactions] = useState(
+    () => loadFromStorage('shardeum_transactions', [])
+  )
   const [logs, setLogs] = useState([])
 
-  const network = SHARDEUM_NETWORKS[selectedNetwork]
+  const network = SHARDEUM_NETWORKS[selectedNetwork] || SHARDEUM_NETWORKS.testnet
+
+  // Persist network preference
+  useEffect(() => {
+    saveToStorage('shardeum_network', selectedNetwork)
+  }, [selectedNetwork])
+
+  // Persist deployed contracts
+  useEffect(() => {
+    saveToStorage('shardeum_contracts', deployedContracts)
+  }, [deployedContracts])
+
+  // Persist transactions
+  useEffect(() => {
+    saveToStorage('shardeum_transactions', transactions)
+  }, [transactions])
 
   const addLog = useCallback((message, type = 'info') => {
     const entry = {
@@ -50,14 +90,33 @@ export function ShardeumProvider({ children }) {
       message,
       type
     }
-    setLogs(prev => [entry, ...prev].slice(0, 200))
+    setLogs(prev => [entry, ...prev].slice(0, 500))
+  }, [])
+
+  const clearLogs = useCallback(() => {
+    setLogs([])
+  }, [])
+
+  const refreshBalance = useCallback(async (address, web3Provider) => {
+    if (!address || !web3Provider) return
+    try {
+      const bal = await web3Provider.getBalance(address)
+      setBalance(ethers.formatEther(bal))
+    } catch {
+      // silently fail — balance will just stay stale
+    }
   }, [])
 
   const checkNetworkStatus = useCallback(async () => {
     setNetworkStatus('checking')
     try {
       const p = new ethers.JsonRpcProvider(network.rpcUrl)
-      await p.getBlockNumber()
+      // Use a short timeout so we don't hang
+      const blockPromise = p.getBlockNumber()
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 8000)
+      )
+      await Promise.race([blockPromise, timeoutPromise])
       setProvider(p)
       setNetworkStatus('online')
       addLog(`Connected to ${network.name}`, 'success')
@@ -67,9 +126,46 @@ export function ShardeumProvider({ children }) {
     }
   }, [network, addLog])
 
+  // Re-check on network switch, and refresh wallet balance if connected
   useEffect(() => {
     checkNetworkStatus()
-  }, [selectedNetwork])
+  }, [selectedNetwork]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When wallet is connected and network changes, re-fetch balance with new provider
+  useEffect(() => {
+    if (walletAddress && window.ethereum) {
+      const web3Provider = new ethers.BrowserProvider(window.ethereum)
+      refreshBalance(walletAddress, web3Provider)
+    }
+  }, [selectedNetwork, walletAddress, refreshBalance])
+
+  // Listen for MetaMask account/chain changes
+  useEffect(() => {
+    if (!window.ethereum) return
+    const handleAccountsChanged = (accounts) => {
+      if (accounts.length === 0) {
+        setWalletAddress(null)
+        setSigner(null)
+        setBalance(null)
+        addLog('Wallet disconnected via MetaMask', 'info')
+      } else {
+        setWalletAddress(accounts[0])
+        const web3Provider = new ethers.BrowserProvider(window.ethereum)
+        refreshBalance(accounts[0], web3Provider)
+        addLog(`Account changed: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`, 'info')
+      }
+    }
+    const handleChainChanged = () => {
+      addLog('Chain changed in MetaMask — refreshing...', 'info')
+      window.location.reload()
+    }
+    window.ethereum.on('accountsChanged', handleAccountsChanged)
+    window.ethereum.on('chainChanged', handleChainChanged)
+    return () => {
+      window.ethereum.removeListener('accountsChanged', handleAccountsChanged)
+      window.ethereum.removeListener('chainChanged', handleChainChanged)
+    }
+  }, [addLog, refreshBalance])
 
   const connectWallet = useCallback(async () => {
     if (!window.ethereum) {
@@ -110,9 +206,13 @@ export function ShardeumProvider({ children }) {
       setWalletAddress(address)
       setSigner(web3Signer)
       setBalance(ethers.formatEther(bal))
-      addLog(`Wallet connected: ${address.slice(0,6)}...${address.slice(-4)}`, 'success')
+      addLog(`Wallet connected: ${address.slice(0, 6)}...${address.slice(-4)}`, 'success')
     } catch (e) {
-      addLog(`Wallet connection failed: ${e.message}`, 'error')
+      if (e.code === 4001) {
+        addLog('Wallet connection rejected by user', 'warn')
+      } else {
+        addLog(`Wallet connection failed: ${e.message}`, 'error')
+      }
     }
   }, [addLog, network])
 
@@ -127,8 +227,18 @@ export function ShardeumProvider({ children }) {
     setDeployedContracts(prev => [contract, ...prev])
   }, [])
 
+  const clearDeployedContracts = useCallback(() => {
+    setDeployedContracts([])
+    saveToStorage('shardeum_contracts', [])
+  }, [])
+
   const addTransaction = useCallback((tx) => {
-    setTransactions(prev => [tx, ...prev].slice(0, 100))
+    setTransactions(prev => [tx, ...prev].slice(0, 200))
+  }, [])
+
+  const clearTransactions = useCallback(() => {
+    setTransactions([])
+    saveToStorage('shardeum_transactions', [])
   }, [])
 
   return (
@@ -140,10 +250,11 @@ export function ShardeumProvider({ children }) {
       provider, signer,
       networkStatus,
       connectWallet, disconnectWallet,
-      deployedContracts, addDeployedContract,
-      transactions, addTransaction,
-      logs, addLog,
+      deployedContracts, addDeployedContract, clearDeployedContracts,
+      transactions, addTransaction, clearTransactions,
+      logs, addLog, clearLogs,
       refreshNetwork: checkNetworkStatus,
+      refreshBalance,
     }}>
       {children}
     </ShardeumContext.Provider>

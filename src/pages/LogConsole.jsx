@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Terminal, Trash2, Download, Filter } from 'lucide-react'
+import { Terminal, Trash2, Download, Search } from 'lucide-react'
 import { useShardeum } from '../contexts/ShardeumContext'
 
 const TYPE_COLORS = {
@@ -10,10 +10,10 @@ const TYPE_COLORS = {
 }
 
 const TYPE_PREFIX = {
-  info: 'INFO ',
+  info:    'INFO ',
   success: 'OK   ',
-  error: 'ERR  ',
-  warn: 'WARN ',
+  error:   'ERR  ',
+  warn:    'WARN ',
 }
 
 export default function LogConsole() {
@@ -22,6 +22,7 @@ export default function LogConsole() {
   const [search, setSearch] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
   const bottomRef = useRef(null)
+  const containerRef = useRef(null)
 
   useEffect(() => {
     if (autoScroll && bottomRef.current) {
@@ -29,20 +30,27 @@ export default function LogConsole() {
     }
   }, [logs, autoScroll])
 
-  const filtered = logs.filter(l => {
-    if (filter !== 'all' && l.type !== filter) return false
-    if (search && !l.message.toLowerCase().includes(search.toLowerCase())) return false
-    return true
-  }).reverse()
+  const filtered = logs
+    .filter(l => {
+      if (filter !== 'all' && l.type !== filter) return false
+      if (search && !l.message.toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    })
+    .slice() // keep original order (newest first in state, display oldest first)
+    .reverse()
 
   const downloadLogs = () => {
-    const text = logs.map(l => `[${l.timestamp}] [${l.type.toUpperCase()}] ${l.message}`).join('\n')
+    const text = [...logs]
+      .reverse()
+      .map(l => `[${l.timestamp}] [${l.type.toUpperCase()}] ${l.message}`)
+      .join('\n')
     const blob = new Blob([text], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = `shardeum-devkit-logs-${Date.now()}.txt`
     a.click()
+    URL.revokeObjectURL(url)
   }
 
   const counts = { all: logs.length, info: 0, success: 0, error: 0, warn: 0 }
@@ -56,11 +64,15 @@ export default function LogConsole() {
           <p className="text-xs font-mono mt-0.5" style={{ color: '#6b9aaa' }}>System logs & debug output</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={downloadLogs} className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3" style={{ borderRadius: '4px' }}>
+          <button onClick={downloadLogs} disabled={logs.length === 0}
+            className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3"
+            style={{ borderRadius: '4px', opacity: logs.length === 0 ? 0.5 : 1 }}>
             <Download size={13} />
             Export
           </button>
-          <button onClick={clearLogs} className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3" style={{ borderRadius: '4px', color: '#ef4444', borderColor: '#ef4444' }}>
+          <button onClick={clearLogs} disabled={logs.length === 0}
+            className="cyber-btn rounded flex items-center gap-2 text-xs py-1.5 px-3"
+            style={{ borderRadius: '4px', color: '#ef4444', borderColor: '#ef4444', opacity: logs.length === 0 ? 0.5 : 1 }}>
             <Trash2 size={13} />
             Clear
           </button>
@@ -83,9 +95,12 @@ export default function LogConsole() {
             </button>
           ))}
         </div>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          className="cyber-input rounded text-xs flex-1" style={{ borderRadius: '4px', maxWidth: '250px' }}
-          placeholder="Search logs..." />
+        <div className="relative flex-1" style={{ maxWidth: '280px' }}>
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#2d5a68' }} />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            className="cyber-input rounded text-xs w-full pl-8" style={{ borderRadius: '4px' }}
+            placeholder="Search logs..." />
+        </div>
         <label className="flex items-center gap-2 text-xs font-mono cursor-pointer" style={{ color: '#6b9aaa' }}>
           <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)}
             style={{ accentColor: '#00f5d4' }} />
@@ -109,7 +124,7 @@ export default function LogConsole() {
         </div>
 
         {/* Log entries */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-0.5 code-scroll" style={{ background: '#020a0f' }}>
+        <div ref={containerRef} className="flex-1 overflow-y-auto p-4 space-y-0.5 code-scroll" style={{ background: '#020a0f' }}>
           {filtered.length === 0 ? (
             <div style={{ color: '#2d5a68', paddingTop: '20px' }}>
               <span style={{ color: '#0d2d3d' }}>$ </span>
@@ -118,8 +133,12 @@ export default function LogConsole() {
             </div>
           ) : (
             filtered.map((log, i) => (
-              <div key={log.id || i} className="flex gap-3 py-0.5 hover:bg-white hover:bg-opacity-5 px-1 rounded transition-colors"
-                style={{ lineHeight: '1.6' }}>
+              <div key={log.id || i}
+                className="flex gap-3 py-0.5 px-1 rounded transition-colors"
+                style={{ lineHeight: '1.6' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
                 <span style={{ color: '#2d5a68', flexShrink: 0, userSelect: 'none' }}>{log.timestamp}</span>
                 <span style={{ color: TYPE_COLORS[log.type] || '#6b9aaa', flexShrink: 0, userSelect: 'none', fontWeight: 600 }}>
                   {TYPE_PREFIX[log.type] || 'LOG  '}
