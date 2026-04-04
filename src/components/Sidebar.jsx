@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Code2, Rocket, Zap, Activity,
   Network, Terminal, Wallet, Settings, ChevronLeft,
-  ChevronRight, Hexagon
+  ChevronRight, HelpCircle
 } from 'lucide-react'
 import { useShardeum } from '../contexts/ShardeumContext'
 
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { path: '/logs', icon: Terminal, label: 'Console' },
   { path: '/wallet', icon: Wallet, label: 'Wallet' },
   { path: '/settings', icon: Settings, label: 'Settings' },
+  { path: '/help', icon: HelpCircle, label: 'Help Guide', highlight: true },
 ]
 
 export default function Sidebar({ collapsed, onToggle }) {
@@ -71,17 +72,31 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       {/* Nav */}
       <nav className="flex-1 py-2">
-        {NAV_ITEMS.map(({ path, icon: Icon, label }) => (
-          <div
-            key={path}
-            className={`nav-item ${location.pathname === path ? 'active' : ''}`}
-            onClick={() => navigate(path)}
-            title={collapsed ? label : ''}
-          >
-            <Icon size={16} style={{ flexShrink: 0 }} />
-            {!collapsed && <span className="font-body font-medium">{label}</span>}
-          </div>
-        ))}
+        {NAV_ITEMS.map(({ path, icon: Icon, label, highlight }) => {
+          const active = location.pathname === path
+          return (
+            <div
+              key={path}
+              className={`nav-item ${active ? 'active' : ''}`}
+              onClick={() => navigate(path)}
+              title={collapsed ? label : ''}
+              style={highlight ? {
+                marginTop: '6px',
+                borderTop: '1px solid #0d2d3d',
+                paddingTop: '12px',
+                color: active ? '#00f5d4' : '#f59e0b',
+                borderLeft: active ? '2px solid #00f5d4' : '2px solid transparent',
+              } : {}}
+            >
+              <Icon size={16} style={{ flexShrink: 0, color: highlight && !active ? '#f59e0b' : undefined }} />
+              {!collapsed && (
+                <span className="font-body font-medium" style={{ color: highlight && !active ? '#f59e0b' : undefined }}>
+                  {label}
+                </span>
+              )}
+            </div>
+          )
+        })}
       </nav>
 
       {/* Collapse toggle */}

@@ -12,6 +12,7 @@ import NetworkMonitor from './pages/NetworkMonitor'
 import LogConsole from './pages/LogConsole'
 import WalletManager from './pages/WalletManager'
 import Settings from './pages/Settings'
+import HelpCenter from './pages/HelpCenter'
 
 function AppLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -57,6 +58,7 @@ function AppLayout() {
             <Route path="/logs" element={<LogConsole />} />
             <Route path="/wallet" element={<WalletManager />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/help" element={<HelpCenter />} />
           </Routes>
         </main>
       </div>

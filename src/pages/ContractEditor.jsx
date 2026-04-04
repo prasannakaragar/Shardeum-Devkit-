@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useShardeum } from '../contexts/ShardeumContext'
 import { ethers } from 'ethers'
+import DebugAssistant from '../components/DebugAssistant'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 const STORAGE_KEY = 'shardeum_editor_contracts'
@@ -1051,6 +1052,27 @@ export default function ContractEditor() {
               ))
             )}
           </div>
+        )}
+
+        {/* ABI + Bytecode viewer — DebugAssistant lives here when there are errors */}
+        {compileResult && !compileResult.success && (
+          <DebugAssistant
+            errors={compileResult.errors}
+            sourceCode={activeContract.code}
+            onApplyFix={(fixedCode) => {
+              setContracts(prev => {
+                const updated = prev.map(c =>
+                  c.id === activeId
+                    ? { ...c, code: fixedCode, compiled: null, selectedContract: null }
+                    : c
+                )
+                saveContracts(updated)
+                return updated
+              })
+              setCompileResult(null)
+              addLog('AI fix applied — click Compile to verify', 'success')
+            }}
+          />
         )}
 
         {/* ABI + Bytecode viewer */}
