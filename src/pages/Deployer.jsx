@@ -213,6 +213,13 @@ export default function Deployer() {
         const feeData = await web3Provider.getFeeData()
         deployGasPrice = feeData.gasPrice || feeData.maxFeePerGas
         if (!deployGasPrice) throw new Error('Gas price unavailable')
+
+        // Fix abnormal values
+        if (deployGasPrice > ethers.parseUnits("100", "gwei")) {
+          addLog("⚠️ Abnormal gas price detected, normalizing...", 'warn')
+          deployGasPrice = ethers.parseUnits("1", "gwei")
+        }
+
         // Use network gas price directly — no artificial inflation
         setLiveGasPrice(ethers.formatUnits(deployGasPrice, 'gwei'))
         addLog(`Gas price: ${parseFloat(ethers.formatUnits(deployGasPrice, 'gwei')).toFixed(4)} gwei`, 'success')
@@ -245,6 +252,13 @@ export default function Deployer() {
           const web3Provider = new ethers.BrowserProvider(window.ethereum)
           const feeData = await web3Provider.getFeeData()
           deployGasPrice = feeData.gasPrice || feeData.maxFeePerGas
+
+          // Fix abnormal values
+          if (deployGasPrice && deployGasPrice > ethers.parseUnits("100", "gwei")) {
+            addLog("⚠️ Abnormal gas price detected, normalizing...", 'warn')
+            deployGasPrice = ethers.parseUnits("1", "gwei")
+          }
+
           setLiveGasPrice(ethers.formatUnits(deployGasPrice, 'gwei'))
         } catch {
           throw new Error('Failed to fetch network gas price. Is your wallet connected to the right network?')
@@ -257,6 +271,7 @@ export default function Deployer() {
       addLog('Sending deployment transaction...', 'info')
       const factory = new ethers.ContractFactory(parsedAbi, bc, signer)
       const deployOverrides = { gasLimit: deployGasLimit }
+      if (deployGasPrice) deployOverrides.gasPrice = deployGasPrice
       // Let the provider and MetaMask handle EIP-1559 pricing automatically
       const contract = await factory.deploy(...args, deployOverrides)
       const txHash = contract.deploymentTransaction()?.hash

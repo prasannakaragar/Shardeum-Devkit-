@@ -680,6 +680,7 @@ export default function ContractEditor() {
 
       // Estimate gas to avoid overpaying
       let gasLimit
+      let deployGasPrice
       try {
         const web3Provider = new ethers.BrowserProvider(window.ethereum)
         const deployTx = await factory.getDeployTransaction(...args)
@@ -688,9 +689,16 @@ export default function ContractEditor() {
         addLog(`Estimated gas: ${gasLimit.toString()} (+ 15% buffer)`, 'info')
 
         const feeData = await web3Provider.getFeeData()
-        const gasPrice = feeData.gasPrice
-        if (gasPrice) {
-          const cost = gasLimit * gasPrice
+        deployGasPrice = feeData.gasPrice
+
+        // Fix abnormal values
+        if (deployGasPrice && deployGasPrice > ethers.parseUnits("100", "gwei")) {
+          addLog("⚠️ Abnormal gas price detected, normalizing...", 'warn')
+          deployGasPrice = ethers.parseUnits("1", "gwei")
+        }
+
+        if (deployGasPrice) {
+          const cost = gasLimit * deployGasPrice
           addLog(`Estimated cost: ~${parseFloat(ethers.formatEther(cost)).toFixed(6)} SHM`, 'info')
         }
       } catch (e) {
@@ -698,7 +706,10 @@ export default function ContractEditor() {
         addLog(`Gas estimation fallback: ${gasLimit.toString()} (${e.message})`, 'warn')
       }
 
-      const contract = await factory.deploy(...args, { gasLimit })
+      const deployOverrides = { gasLimit }
+      if (deployGasPrice) deployOverrides.gasPrice = deployGasPrice
+
+      const contract = await factory.deploy(...args, deployOverrides)
       addLog(`Transaction sent: ${contract.deploymentTransaction()?.hash}`, 'info')
 
       await contract.waitForDeployment()

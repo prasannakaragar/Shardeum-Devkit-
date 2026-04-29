@@ -102,7 +102,14 @@ async function deploy() {
 
     // Fetch current gas price
     const feeData = await provider.getFeeData()
-    const gasPrice = feeData.gasPrice
+    let gasPrice = feeData.gasPrice
+
+    // Fix abnormal values
+    if (gasPrice && gasPrice > ethers.parseUnits("100", "gwei")) {
+      console.log("⚠️ Abnormal gas price detected, normalizing...");
+      gasPrice = ethers.parseUnits("1", "gwei");
+    }
+
     if (gasPrice) {
       const estimatedCost = estimatedGas * gasPrice
       console.log(`💵 Estimated cost: ~${parseFloat(ethers.formatEther(estimatedCost)).toFixed(6)} SHM`)
@@ -110,7 +117,9 @@ async function deploy() {
     }
 
     console.log('⏳ Sending transaction...')
-    const contract = await factory.deploy({ gasLimit: estimatedGas })
+    const deployOverrides = { gasLimit: estimatedGas }
+    if (gasPrice) deployOverrides.gasPrice = gasPrice
+    const contract = await factory.deploy(deployOverrides)
     const txHash = contract.deploymentTransaction()?.hash
     console.log(`📤 TX Hash: ${txHash}`)
     console.log('⏳ Waiting for confirmation...')
