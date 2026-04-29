@@ -173,6 +173,11 @@ export function ShardeumProvider({ children }) {
       return
     }
     try {
+      // Force account selection dialog in MetaMask instead of auto-connecting
+      await window.ethereum.request({
+        method: 'wallet_requestPermissions',
+        params: [{ eth_accounts: {} }],
+      })
       await window.ethereum.request({ method: 'eth_requestAccounts' })
 
       // Try to switch to the selected network
