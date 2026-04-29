@@ -83,7 +83,9 @@ export default function Deployer() {
   const [contractName, setContractName] = useState(savedState?.contractName || '')
   const [abiText, setAbiText]           = useState(savedState?.abiText || '')
   const [bytecode, setBytecode]         = useState(savedState?.bytecode || '')
-  const [gasLimit, setGasLimit]         = useState(savedState?.gasLimit || '3000000')
+  const [gasLimit, setGasLimit]         = useState(savedState?.gasLimit || 'auto')
+  const [estimatedGas, setEstimatedGas] = useState(null)
+  const [estimatedCost, setEstimatedCost] = useState(null)
   const [argValues, setArgValues]       = useState(savedState?.argValues || [])
 
   // Derived parse state (not persisted — re-derived from abiText)
@@ -201,31 +203,66 @@ export default function Deployer() {
       }
       addLog(`Constructor args: ${args.length > 0 ? JSON.stringify(args.map(String)) : 'none'}`, 'info')
 
-      // Step 3: Fetch live gas price
+      // Step 3: Estimate gas & fetch gas price
       setStep(3)
-      addLog('Fetching network gas price...', 'info')
+      addLog('Estimating gas & fetching gas price...', 'info')
+      let deployGasLimit
       let deployGasPrice
       try {
         const web3Provider = new ethers.BrowserProvider(window.ethereum)
         const feeData = await web3Provider.getFeeData()
         deployGasPrice = feeData.gasPrice || feeData.maxFeePerGas
         if (!deployGasPrice) throw new Error('Gas price unavailable')
-        deployGasPrice = deployGasPrice * 120n / 100n
+        // Use network gas price directly — no artificial inflation
         setLiveGasPrice(ethers.formatUnits(deployGasPrice, 'gwei'))
         addLog(`Gas price: ${parseFloat(ethers.formatUnits(deployGasPrice, 'gwei')).toFixed(4)} gwei`, 'success')
+
+        // Estimate actual gas needed
+        if (gasLimit === 'auto' || !gasLimit) {
+          const tempFactory = new ethers.ContractFactory(parsedAbi, bc, signer)
+          const deployTx = await tempFactory.getDeployTransaction(...args)
+          const estimated = await web3Provider.estimateGas(deployTx)
+          // Add 15% buffer for safety
+          deployGasLimit = estimated * 115n / 100n
+          setEstimatedGas(deployGasLimit.toString())
+          const cost = deployGasLimit * deployGasPrice
+          setEstimatedCost(parseFloat(ethers.formatEther(cost)).toFixed(6))
+          addLog(`Estimated gas: ${deployGasLimit.toString()} (auto + 15% buffer)`, 'success')
+          addLog(`Estimated cost: ~${parseFloat(ethers.formatEther(cost)).toFixed(6)} SHM`, 'info')
+        } else {
+          deployGasLimit = BigInt(gasLimit)
+          const cost = deployGasLimit * deployGasPrice
+          setEstimatedGas(deployGasLimit.toString())
+          setEstimatedCost(parseFloat(ethers.formatEther(cost)).toFixed(6))
+          addLog(`Manual gas limit: ${deployGasLimit.toString()}`, 'info')
+        }
       } catch (e) {
-        addLog(`Could not fetch gas price: ${e.message}`, 'error')
-        throw new Error('Failed to fetch network gas price. Is your wallet connected to the right network?')
+        addLog(`Gas estimation warning: ${e.message}`, 'warn')
+        // Fallback: use a reasonable default instead of 3M
+        deployGasLimit = 500000n
+        setEstimatedGas('500000')
+        try {
+          const web3Provider = new ethers.BrowserProvider(window.ethereum)
+          const feeData = await web3Provider.getFeeData()
+          deployGasPrice = feeData.gasPrice || feeData.maxFeePerGas
+          setLiveGasPrice(ethers.formatUnits(deployGasPrice, 'gwei'))
+        } catch {
+          throw new Error('Failed to fetch network gas price. Is your wallet connected to the right network?')
+        }
+        addLog(`Using fallback gas limit: 500,000`, 'warn')
       }
 
       // Step 4: Deploy
       setStep(4)
       addLog('Sending deployment transaction...', 'info')
       const factory = new ethers.ContractFactory(parsedAbi, bc, signer)
-      const contract = await factory.deploy(...args, {
-        gasLimit: BigInt(gasLimit),
-        gasPrice: deployGasPrice
-      })
+      const deployOverrides = { gasLimit: deployGasLimit }
+      // Only set gasPrice if the network doesn't support EIP-1559
+      // Let the provider handle EIP-1559 pricing automatically when possible
+      if (deployGasPrice) {
+        deployOverrides.gasPrice = deployGasPrice
+      }
+      const contract = await factory.deploy(...args, deployOverrides)
       const txHash = contract.deploymentTransaction()?.hash
       addLog(`Transaction sent: ${txHash}`, 'info')
 
@@ -277,7 +314,7 @@ export default function Deployer() {
     setContractName('')
     setAbiText('')
     setBytecode('')
-    setGasLimit('3000000')
+    setGasLimit('auto')
     setParsedAbi(null)
     setConstructorInputs([])
     setArgValues([])
@@ -286,6 +323,8 @@ export default function Deployer() {
     setError(null)
     setStep(0)
     setLiveGasPrice(null)
+    setEstimatedGas(null)
+    setEstimatedCost(null)
     saveDeployerState(null)
     localStorage.removeItem(DEPLOYER_KEY)
   }
@@ -401,16 +440,36 @@ export default function Deployer() {
             <div className="text-xs font-mono" style={{ color: '#00f5d4' }}>GAS SETTINGS</div>
             <div>
               <label className="block text-xs font-mono mb-1" style={{ color: '#6b9aaa' }}>GAS LIMIT</label>
-              <input
-                value={gasLimit}
-                onChange={e => setGasLimit(e.target.value)}
-                className="cyber-input rounded w-full"
-                style={{ borderRadius: '4px' }}
-              />
+              <div className="flex gap-2">
+                <input
+                  value={gasLimit}
+                  onChange={e => setGasLimit(e.target.value)}
+                  className="cyber-input rounded w-full"
+                  style={{ borderRadius: '4px' }}
+                  placeholder="auto"
+                />
+                {gasLimit !== 'auto' && (
+                  <button
+                    onClick={() => setGasLimit('auto')}
+                    className="cyber-btn rounded text-xs px-3 flex-shrink-0"
+                    style={{ borderRadius: '4px', color: '#00f5d4', borderColor: '#00f5d4' }}
+                  >
+                    Auto
+                  </button>
+                )}
+              </div>
+              <div className="text-xs font-mono mt-1" style={{ color: '#2d5a68' }}>
+                {gasLimit === 'auto'
+                  ? '✓ Gas will be estimated automatically (recommended)'
+                  : '⚠ Manual gas limit — set to "auto" for optimal fees'
+                }
+              </div>
             </div>
             <div className="text-xs font-mono p-2 rounded" style={{ background: 'rgba(0,245,212,0.05)', color: '#6b9aaa' }}>
-              ⚡ Gas price fetched live from network at deploy time
+              ⚡ Gas price fetched live from network · no markup applied
               {liveGasPrice && <span style={{ color: '#00f5d4' }}> · Last: {parseFloat(liveGasPrice).toFixed(4)} gwei</span>}
+              {estimatedGas && <span style={{ color: '#10b981' }}> · Est. gas: {parseInt(estimatedGas).toLocaleString()}</span>}
+              {estimatedCost && <span style={{ color: '#f59e0b' }}> · Est. cost: ~{estimatedCost} SHM</span>}
             </div>
           </div>
 

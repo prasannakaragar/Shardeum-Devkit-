@@ -478,7 +478,8 @@ export default function DebugAssistant({ errors, sourceCode, onApplyFix }) {
                   : 'No API key set — will apply smart heuristic fixes. Add an API key above for full AI correction.'}
               </p>
               <button onClick={runDebug}
-                className="inline-flex items-center gap-2 px-6 py-3 rounded font-mono font-bold text-sm"
+                className="inline-flex items-center gap-2 px
+                -6 py-3 rounded font-mono font-bold text-sm"
                 style={{
                   background: 'linear-gradient(135deg,#f59e0b,#d97706)',
                   color: '#030d12', border: 'none', cursor: 'pointer', borderRadius: '6px',

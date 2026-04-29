@@ -677,7 +677,28 @@ export default function ContractEditor() {
       })
 
       const factory = new ethers.ContractFactory(abi, bytecode, signer)
-      const contract = await factory.deploy(...args)
+
+      // Estimate gas to avoid overpaying
+      let gasLimit
+      try {
+        const web3Provider = new ethers.BrowserProvider(window.ethereum)
+        const deployTx = await factory.getDeployTransaction(...args)
+        const estimated = await web3Provider.estimateGas(deployTx)
+        gasLimit = estimated * 115n / 100n  // 15% buffer
+        addLog(`Estimated gas: ${gasLimit.toString()} (+ 15% buffer)`, 'info')
+
+        const feeData = await web3Provider.getFeeData()
+        const gasPrice = feeData.gasPrice
+        if (gasPrice) {
+          const cost = gasLimit * gasPrice
+          addLog(`Estimated cost: ~${parseFloat(ethers.formatEther(cost)).toFixed(6)} SHM`, 'info')
+        }
+      } catch (e) {
+        gasLimit = 500000n  // Reasonable fallback instead of ethers default
+        addLog(`Gas estimation fallback: ${gasLimit.toString()} (${e.message})`, 'warn')
+      }
+
+      const contract = await factory.deploy(...args, { gasLimit })
       addLog(`Transaction sent: ${contract.deploymentTransaction()?.hash}`, 'info')
 
       await contract.waitForDeployment()

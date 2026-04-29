@@ -84,9 +84,33 @@ async function deploy() {
 
   try {
     const factory = new ethers.ContractFactory(abi, bytecode, wallet)
-    console.log('⏳ Sending transaction...')
 
-    const contract = await factory.deploy({ gasLimit: 3000000 })
+    // Estimate gas instead of using a hardcoded limit
+    console.log('⏳ Estimating gas...')
+    const deployTx = await factory.getDeployTransaction()
+    let estimatedGas
+    try {
+      estimatedGas = await provider.estimateGas({ ...deployTx, from: wallet.address })
+      // Add a 15% buffer for safety
+      estimatedGas = estimatedGas * 115n / 100n
+      console.log(`⛽ Estimated gas: ${estimatedGas.toString()} (includes 15% buffer)`)
+    } catch (e) {
+      // Fallback to a reasonable default if estimation fails
+      estimatedGas = 500000n
+      console.log(`⚠️  Gas estimation failed (${e.message}), using fallback: ${estimatedGas}`)
+    }
+
+    // Fetch current gas price
+    const feeData = await provider.getFeeData()
+    const gasPrice = feeData.gasPrice
+    if (gasPrice) {
+      const estimatedCost = estimatedGas * gasPrice
+      console.log(`💵 Estimated cost: ~${parseFloat(ethers.formatEther(estimatedCost)).toFixed(6)} SHM`)
+      console.log(`⛽ Gas price: ${parseFloat(ethers.formatUnits(gasPrice, 'gwei')).toFixed(4)} gwei`)
+    }
+
+    console.log('⏳ Sending transaction...')
+    const contract = await factory.deploy({ gasLimit: estimatedGas })
     const txHash = contract.deploymentTransaction()?.hash
     console.log(`📤 TX Hash: ${txHash}`)
     console.log('⏳ Waiting for confirmation...')
@@ -98,6 +122,7 @@ async function deploy() {
     console.log('━'.repeat(50))
     console.log(`📍 Address:  ${address}`)
     console.log(`🔗 TX Hash:  ${txHash}`)
+    console.log(`⛽ Gas Used:  ~${estimatedGas.toString()}`)
     console.log(`🌐 Explorer: https://explorer-${networkName}.shardeum.org/address/${address}`)
 
     // Save deployment info
