@@ -1,12 +1,12 @@
-const price = BigInt('0x417cdf6c58c73')
-console.log('Gas price (wei):', price.toString())
-console.log('Gas price (gwei):', (Number(price) / 1e9).toFixed(2))
-console.log('')
-console.log('--- With 3M gas limit (OLD code) ---')
-console.log('Cost:', (Number(price) * 3000000 / 1e18).toFixed(4), 'SHM')
-console.log('')
-console.log('--- With 200K gas limit (NEW - SimpleStorage) ---')
-console.log('Cost:', (Number(price) * 200000 / 1e18).toFixed(4), 'SHM')
-console.log('')
-console.log('--- With 500K gas limit (fallback) ---')
-console.log('Cost:', (Number(price) * 500000 / 1e18).toFixed(4), 'SHM')
+const { ethers } = require('ethers');
+(async () => {
+  try {
+    const p = new ethers.JsonRpcProvider('https://api-mezame.shardeum.org');
+    const d = await p.getFeeData();
+    console.log('gasPrice:', d.gasPrice);
+    console.log('maxFeePerGas:', d.maxFeePerGas);
+    console.log('maxPriorityFeePerGas:', d.maxPriorityFeePerGas);
+  } catch(e) {
+    console.error(e);
+  }
+})();

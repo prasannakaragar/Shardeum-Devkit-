@@ -257,11 +257,7 @@ export default function Deployer() {
       addLog('Sending deployment transaction...', 'info')
       const factory = new ethers.ContractFactory(parsedAbi, bc, signer)
       const deployOverrides = { gasLimit: deployGasLimit }
-      // Only set gasPrice if the network doesn't support EIP-1559
-      // Let the provider handle EIP-1559 pricing automatically when possible
-      if (deployGasPrice) {
-        deployOverrides.gasPrice = deployGasPrice
-      }
+      // Let the provider and MetaMask handle EIP-1559 pricing automatically
       const contract = await factory.deploy(...args, deployOverrides)
       const txHash = contract.deploymentTransaction()?.hash
       addLog(`Transaction sent: ${txHash}`, 'info')
